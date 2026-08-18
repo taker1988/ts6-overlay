@@ -27,7 +27,7 @@ Upon launching, the application automatically creates the following files in its
 1. Download the latest `ts_overlay.exe` from the [Releases](https://github.com/taker1988/ts6-overlay/releases) page.
 2. Run the executable.
 3. Open TeamSpeak 6 and authorize the new connection request for the overlay (Settings [gear icon bottom left] -> Remote Apps). **Note:** The application connects via the default port 5899.
-4. Right-click the red icon in your System Tray to adjust settings or lock the overlay.
+4. Right-click the blue icon in your System Tray to adjust settings or lock the overlay.
 
 ---
 
@@ -54,4 +54,4 @@ Beim Start erstellt die Anwendung automatisch folgende Dateien in ihrem Verzeich
 1. Lade die aktuellste `ts_overlay.exe` von der [Releases](https://github.com/taker1988/ts6-overlay/releases) Seite herunter.
 2. Starte die Anwendung.
 3. Öffne TeamSpeak 6 und erlaube die Verbindungsanfrage für das Overlay (Einstellungen [Zahnrad-Symbol unten links] -> Remote Apps). **Wichtig:** Die Verbindung erfolgt über den Standard-Port 5899.
-4. Mache einen Rechtsklick auf das rote Icon im System Tray (Taskleiste), um Einstellungen vorzunehmen oder das Overlay zu sperren.
+4. Mache einen Rechtsklick auf das blaue Icon im System Tray (Taskleiste), um Einstellungen vorzunehmen oder das Overlay zu sperren.
