@@ -7,39 +7,41 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QUrl, QPoint
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, 
-                               QSystemTrayIcon, QMenu, QFrame, QMessageBox, 
+                               QSystemTrayIcon, QMenu, QFrame, QMessageBox,
                                QSizeGrip, QHBoxLayout)
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 TS_WS_URL = "ws://127.0.0.1:5899"
 CONFIG_FILE = "ts_overlay_config.json"
-VERSION = "v1.0.0"
+VERSION = "v1.0.1"
 GITHUB_REPO = "https://github.com/taker1988/ts6-overlay"
 GITHUB_API_LATEST = "https://api.github.com/repos/taker1988/ts6-overlay/releases/latest"
 
 LANG = {
     "de": {
-        "lock": "Position fixieren",
+        "lock": "Overlayfenster fixieren",
+        "dynamic_size": "Dynamische Fenstergröße",
         "quit": "Beenden",
         "lang": "Sprache",
         "app_name": "TS6 Overlay by taker1988",
         "about": "Über",
         "update_check": "Auf Updates prüfen",
-        "waiting": "Warte auf TeamSpeak Daten...",
+        "waiting": "Warte auf Daten... (Ggf. 1x kurz sprechen)",
         "update_ok": "Du nutzt die aktuellste Version.",
         "update_new": "Eine neue Version ist verfügbar!",
         "update_err": "Update-Prüfung fehlgeschlagen.",
         "developer": "Entwickler"
     },
     "en": {
-        "lock": "Lock Position",
+        "lock": "Lock Overlay Window",
+        "dynamic_size": "Dynamic Window Size",
         "quit": "Quit",
         "lang": "Language",
         "app_name": "TS6 Overlay by taker1988",
         "about": "About",
         "update_check": "Check for updates",
-        "waiting": "Waiting for TeamSpeak data...",
+        "waiting": "Waiting for TS data... (Talk once to identify)",
         "update_ok": "You are using the latest version.",
         "update_new": "A new version is available!",
         "update_err": "Update check failed.",
@@ -81,12 +83,19 @@ class TSOverlay(QWidget):
         super().__init__()
         self.is_locked = False
         self.old_pos = QPoint()
+        
+        # State Management
+        self.all_clients = {}
+        self.my_client_id = None
+        self.my_channel_id = None
         self.users = {}
-        self.known_names = {}
+        
+        self.last_self_update = None
         
         self.config = self.load_config()
         self.api_key = self.config.get("api_key")
         self.current_lang = self.config.get("lang", "de")
+        self.is_dynamic_size = self.config.get("dynamic_size", True)
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -95,7 +104,6 @@ class TSOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        self.setMinimumSize(250, 100)
         
         icon_path = resource_path("ts6icon.ico")
         self.setWindowIcon(QIcon(icon_path))
@@ -126,6 +134,8 @@ class TSOverlay(QWidget):
 
         self.setup_tray()
         self.setup_websocket()
+        
+        self.refresh_window_size()
         self.update_window_style()
 
     def load_config(self):
@@ -135,12 +145,16 @@ class TSOverlay(QWidget):
                     return json.load(f)
             except Exception as e:
                 logging.error(f"Fehler beim Laden der Konfiguration: {e}")
-        return {"api_key": None, "lang": "de"}
+        return {"api_key": None, "lang": "de", "dynamic_size": True}
 
     def save_config(self):
         try:
             with open(CONFIG_FILE, "w") as f:
-                json.dump({"api_key": self.api_key, "lang": self.current_lang}, f)
+                json.dump({
+                    "api_key": self.api_key, 
+                    "lang": self.current_lang,
+                    "dynamic_size": self.is_dynamic_size
+                }, f)
         except Exception as e:
             logging.error(f"Fehler beim Speichern der Konfiguration: {e}")
 
@@ -162,6 +176,12 @@ class TSOverlay(QWidget):
         self.lock_action.setChecked(self.is_locked)
         self.lock_action.triggered.connect(self.toggle_lock)
         parent_menu.addAction(self.lock_action)
+        
+        self.dynamic_action = QAction(LANG[self.current_lang]["dynamic_size"], self)
+        self.dynamic_action.setCheckable(True)
+        self.dynamic_action.setChecked(self.is_dynamic_size)
+        self.dynamic_action.triggered.connect(self.toggle_dynamic_size)
+        parent_menu.addAction(self.dynamic_action)
         
         parent_menu.addSeparator()
 
@@ -196,7 +216,6 @@ class TSOverlay(QWidget):
     def update_ui_texts(self):
         self.tray_menu.clear()
         self.build_menus(self.tray_menu)
-        
         if not self.users:
             self.placeholder.setText(LANG[self.current_lang]["waiting"])
 
@@ -255,19 +274,35 @@ class TSOverlay(QWidget):
     def update_window_style(self):
         style = "QFrame { background-color: rgba(0, 0, 0, 30); border: 1px solid rgba(255, 255, 255, 15); border-radius: 4px; }"
         self.main_frame.setStyleSheet(style)
-        
-        if self.is_locked:
+
+    def refresh_window_size(self):
+        if self.is_dynamic_size:
             self.size_grip.hide()
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+            self.adjustSize()
+            
+            hint = self.sizeHint()
+            self.setFixedSize(hint)
         else:
-            self.size_grip.show()
+            if not self.is_locked:
+                self.size_grip.show()
+            else:
+                self.size_grip.hide()
+                
+            self.setMinimumSize(250, 100)
+            self.setMaximumSize(16777215, 16777215)
+
+    def toggle_dynamic_size(self):
+        self.is_dynamic_size = not self.is_dynamic_size
+        self.save_config()
+        self.refresh_window_size()
 
     def toggle_lock(self):
         self.is_locked = not self.is_locked
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, self.is_locked)
         self.update_window_style()
-        self.apply_style(self.placeholder, False)
-        for label in self.users.values():
-            self.apply_style(label, is_talking=False)
+        self.refresh_window_size()
         self.hide()
         self.show()
 
@@ -311,7 +346,7 @@ class TSOverlay(QWidget):
             "type": "auth",
             "payload": {
                 "identifier": "ts6-custom-overlay",
-                "version": "1.0.0",
+                "version": "1.0.1",
                 "name": LANG["de"]["app_name"],
                 "description": "Overlay for Linux and Windows",
                 "content": {}
@@ -323,22 +358,78 @@ class TSOverlay(QWidget):
             
         self.ws.sendTextMessage(json.dumps(auth_payload))
 
-    def scrape_for_users(self, obj):
+    def extract_clients(self, obj):
         if isinstance(obj, dict):
-            c_id = obj.get("id") or obj.get("clientId")
+            c_id = obj.get("clientId") or obj.get("id")
             props = obj.get("properties")
-            if isinstance(props, dict):
-                name = props.get("nickname")
-                if c_id is not None and name:
-                    str_id = str(c_id)
-                    self.known_names[str_id] = name
-                    if str_id not in self.users:
-                        self.update_user(str_id, name, False)
+
+            if c_id is not None:
+                str_id = str(c_id)
+                if str_id not in self.all_clients:
+                    self.all_clients[str_id] = {"nickname": "Unknown", "cid": "", "is_talking": False}
+                
+                # Extrahiere Nickname
+                if isinstance(props, dict) and "nickname" in props:
+                    self.all_clients[str_id]["nickname"] = props["nickname"]
+                
+                # Extrahiere Channel ID (kann in properties oder im Root-Objekt liegen)
+                cid = None
+                if isinstance(props, dict):
+                    cid = props.get("cid") or props.get("channelId")
+                if not cid:
+                    cid = obj.get("channelId") or obj.get("newChannelId")
+                    
+                if cid is not None:
+                    self.all_clients[str_id]["cid"] = str(cid)
+                    
+                # Extrahiere Sprecher-Status
+                if isinstance(props, dict) and "flagTalking" in props:
+                    self.all_clients[str_id]["is_talking"] = str(props["flagTalking"]).lower() in ("1", "true")
+                elif "status" in obj:
+                    self.all_clients[str_id]["is_talking"] = str(obj["status"]).lower() in ("1", "true")
+                elif "flagTalking" in obj:
+                    self.all_clients[str_id]["is_talking"] = str(obj["flagTalking"]).lower() in ("1", "true")
+
             for v in obj.values():
-                self.scrape_for_users(v)
+                self.extract_clients(v)
         elif isinstance(obj, list):
             for item in obj:
-                self.scrape_for_users(item)
+                self.extract_clients(item)
+
+    def render_gui(self):
+        visible_clients = {}
+        
+        # Zeige nur Clients an, die im selben Channel sind (sofern eigener Channel bekannt ist)
+        for c_id, c_data in self.all_clients.items():
+            if self.my_channel_id and c_data["cid"] == self.my_channel_id:
+                visible_clients[c_id] = c_data
+
+        # Alte Widgets entfernen
+        to_remove = [c_id for c_id in self.users if c_id not in visible_clients]
+        for c_id in to_remove:
+            label = self.users.pop(c_id)
+            self.layout.removeWidget(label)
+            label.deleteLater()
+
+        # Neue Widgets anlegen oder aktualisieren
+        for c_id, c_data in visible_clients.items():
+            if c_id not in self.users:
+                label = QLabel()
+                label.setTextFormat(Qt.TextFormat.RichText)
+                self.layout.insertWidget(self.layout.count() - 2, label)
+                self.users[c_id] = label
+            
+            label = self.users[c_id]
+            speaker_icon = "&nbsp;<span style='color: #4CAF50;'>🔊</span>" if c_data["is_talking"] else ""
+            label.setText(f"<span style='color: #2196F3;'>👤</span> {c_data['nickname']}{speaker_icon}")
+            self.apply_style(label, c_data["is_talking"])
+
+        if not self.users:
+            self.placeholder.show()
+        else:
+            self.placeholder.hide()
+
+        self.refresh_window_size()
 
     def on_message(self, message):
         try:
@@ -350,10 +441,10 @@ class TSOverlay(QWidget):
         msg_type = data.get("type", "")
         payload = data.get("payload", {})
 
-        if msg_type != "auth":
-            logging.debug(f"Event: {msg_type} | Payload: {json.dumps(payload)}")
+        logging.debug(f"Event: {msg_type} | Data: {json.dumps(data)}")
 
-        self.scrape_for_users(data)
+        if msg_type == "clientSelfPropertyUpdated":
+            self.last_self_update = datetime.now()
 
         if msg_type == "auth":
             api_key = payload.get("apiKey")
@@ -361,47 +452,42 @@ class TSOverlay(QWidget):
                 logging.info("Neuer API-Key empfangen und gespeichert.")
                 self.api_key = api_key
                 self.save_config()
+            # Hier darf kein "return" mehr sein, damit die Initial-Daten in extract_clients geladen werden!
+
+        if msg_type in ("clientDisconnected", "clientLeftView"):
+            c_id = str(payload.get("clientId", payload.get("id", "")))
+            if c_id in self.all_clients:
+                del self.all_clients[c_id]
+            self.render_gui()
+            return
+
+        if msg_type == "clientMoved":
+            c_id = str(payload.get("clientId", ""))
+            new_cid = str(payload.get("newChannelId", payload.get("channelId", "")))
             
-            req_payload = {
-                "type": "clientList",
-                "payload": {}
-            }
-            self.ws.sendTextMessage(json.dumps(req_payload))
+            if c_id in self.all_clients and new_cid:
+                self.all_clients[c_id]["cid"] = new_cid
+                
+            if c_id == self.my_client_id and new_cid:
+                self.my_channel_id = new_cid
+                logging.info(f"Lokaler Client Channelwechsel -> {self.my_channel_id}")
+                
+            self.render_gui()
+            return
 
-        client_id = str(payload.get("clientId", payload.get("id", "")))
-        props = payload.get("properties", payload)
-        
-        if client_id and ("flagTalking" in props or "status" in payload):
-            val = props.get("flagTalking") if "flagTalking" in props else payload.get("status")
-            is_talking = str(val).lower() in ("1", "true")
-            name = self.known_names.get(client_id, self.get_existing_name(client_id)) 
-            
-            if name != "Unknown":
-                logging.debug(f"Sprecher-Status erkannt: {name} ({client_id}) -> {is_talking}")
-                self.update_user(client_id, name, is_talking)
+        # Fallback-Identifizierung über Sprechtasten-Timing
+        if msg_type == "talkStatusChanged":
+            c_id = str(payload.get("clientId", ""))
+            if self.my_client_id is None and self.last_self_update:
+                # Wurde in der letzten halben Sekunde ein "clientSelfPropertyUpdated" für uns gefeuert?
+                if (datetime.now() - self.last_self_update).total_seconds() < 0.5:
+                    self.my_client_id = c_id
+                    if c_id in self.all_clients:
+                        self.my_channel_id = self.all_clients[c_id].get("cid")
+                    logging.info(f"Lokaler Client via PTT/Voice Fallback erkannt: {self.my_client_id} in Channel {self.my_channel_id}")
 
-    def get_existing_name(self, client_id):
-        if client_id in self.users:
-            return self.users[client_id].property("raw_name")
-        return "Unknown"
-
-    def update_user(self, client_id, name, is_talking):
-        self.placeholder.hide()
-        
-        if client_id not in self.users:
-            label = QLabel()
-            label.setTextFormat(Qt.TextFormat.RichText)
-            label.setProperty("raw_name", name)
-            self.layout.insertWidget(self.layout.count() - 2, label)
-            self.users[client_id] = label
-
-        label = self.users[client_id]
-        label.setProperty("raw_name", name)
-        
-        speaker_icon = "&nbsp;<span style='color: #4CAF50;'>🔊</span>" if is_talking else ""
-        label.setText(f"<span style='color: #2196F3;'>👤</span> {name}{speaker_icon}")
-        
-        self.apply_style(label, is_talking)
+        self.extract_clients(data)
+        self.render_gui()
 
 if __name__ == "__main__":
     setup_logging()
